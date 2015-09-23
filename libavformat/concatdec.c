@@ -27,7 +27,6 @@
 #include "avformat.h"
 #include "internal.h"
 #include "url.h"
-#include <stdbool.h>
 
 typedef enum ConcatMatchMode {
     MATCH_ONE_TO_ONE,
@@ -57,8 +56,6 @@ typedef struct {
     int seekable;
     ConcatMatchMode stream_match_mode;
     unsigned auto_convert;
-    int error;
-    AVDictionary *options;
 } ConcatContext;
 
 static int concat_probe(AVProbeData *probe)
@@ -282,63 +279,34 @@ static int open_file(AVFormatContext *avf, unsigned fileno)
 {
     ConcatContext *cat = avf->priv_data;
     ConcatFile *file = &cat->files[fileno];
-    AVFormatContext *new_avf = NULL;
-    IJKFormatSegmentContext fsc;
-    const char *url = NULL;
     int ret;
-    int cb_ret;
-    AVDictionary *tmp = NULL;
 
-    new_avf = avformat_alloc_context();
-    if (!new_avf)
+    if (cat->avf)
+        avformat_close_input(&cat->avf);
+
+    cat->avf = avformat_alloc_context();
+    if (!cat->avf)
         return AVERROR(ENOMEM);
 
-    url = file->url;
-    memset(&fsc, 0, sizeof(fsc));
-    if (avf->control_message_cb) {
-        fsc.position = fileno;
-        cb_ret = avf->control_message_cb(avf, IJKAVF_CM_RESOLVE_SEGMENT, &fsc, sizeof(fsc));
-        if (cb_ret == 0) {
-            if (fsc.url)
-                url = fsc.url;
-        }
-    }
+    cat->avf->interrupt_callback = avf->interrupt_callback;
 
-    new_avf->interrupt_callback = avf->interrupt_callback;
-
-    if ((ret = ff_copy_whitelists(new_avf, avf)) < 0)
+    if ((ret = ff_copy_whitelists(cat->avf, avf)) < 0)
         return ret;
 
-    if (cat->options)
-        av_dict_copy(&tmp, cat->options, 0);
-
-    av_dict_set_int(&tmp, "ijkinject-segment-index", fileno, 0);
-    ret = avformat_open_input(&new_avf, url, NULL, &tmp);
-    if (fsc.url_free)
-        fsc.url_free(fsc.url);
-    if (ret < 0 ||
-        (ret = avformat_find_stream_info(new_avf, NULL)) < 0) {
+    if ((ret = avformat_open_input(&cat->avf, file->url, NULL, NULL)) < 0 ||
+        (ret = avformat_find_stream_info(cat->avf, NULL)) < 0) {
         av_log(avf, AV_LOG_ERROR, "Impossible to open '%s'\n", file->url);
-        avformat_close_input(&new_avf);
-        goto fail;
+        avformat_close_input(&cat->avf);
+        return ret;
     }
-
-    if (new_avf) {
-        if (cat->avf)
-            avformat_close_input(&cat->avf);
-
-        cat->avf      = new_avf;
-        cat->cur_file = file;
-        if (file->start_time == AV_NOPTS_VALUE)
-            file->start_time = !fileno ? 0 :
-                               cat->files[fileno - 1].start_time +
-                               cat->files[fileno - 1].duration;
-        if ((ret = match_streams(avf)) < 0)
-            goto fail;
-    }
-fail:
-    av_dict_free(&tmp);
-    return ret;
+    cat->cur_file = file;
+    if (file->start_time == AV_NOPTS_VALUE)
+        file->start_time = !fileno ? 0 :
+                           cat->files[fileno - 1].start_time +
+                           cat->files[fileno - 1].duration;
+    if ((ret = match_streams(avf)) < 0)
+        return ret;
+    return 0;
 }
 
 static int concat_read_close(AVFormatContext *avf)
@@ -352,12 +320,11 @@ static int concat_read_close(AVFormatContext *avf)
         av_freep(&cat->files[i].url);
         av_freep(&cat->files[i].streams);
     }
-    av_dict_free(&cat->options);
     av_freep(&cat->files);
     return 0;
 }
 
-static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
+static int concat_read_header(AVFormatContext *avf)
 {
     ConcatContext *cat = avf->priv_data;
     uint8_t buf[4096];
@@ -366,36 +333,8 @@ static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
     unsigned nb_files_alloc = 0;
     ConcatFile *file = NULL;
     int64_t time = 0;
-    int cb_ret = 0;
-    IJKFormatSegmentConcatContext fsc_cat;
-    IJKFormatSegmentContext fsc;
 
-    memset(&fsc_cat, 0, sizeof(fsc_cat));
-    memset(&fsc, 0, sizeof(fsc));
-    if (avf->control_message_cb) {
-        cb_ret = avf->control_message_cb(avf, IJKAVF_CM_RESOLVE_SEGMENT_CONCAT, &fsc_cat, sizeof(fsc_cat));
-        if (cb_ret == 0) {
-            for (int i = 0; i < fsc_cat.count; ++i) {
-                memset(&fsc, 0, sizeof(fsc));
-                fsc.position = i;
-                cb_ret = avf->control_message_cb(avf, IJKAVF_CM_RESOLVE_SEGMENT_OFFLINE, &fsc, sizeof(fsc));
-                if (cb_ret == 0 && fsc.url != NULL) {
-                    char *filename = av_strdup(fsc.url);
-                    if (fsc.url_free) {
-                        fsc.url_free(fsc.url);
-                    }
-
-                    av_log(avf, AV_LOG_ERROR, "Segment %d: %"PRId64": %s\n", i, fsc.duration, filename);
-                    if ((ret = add_file(avf, filename, &file, &nb_files_alloc)) < 0)
-                        FAIL(ret);
-
-                    file->duration = fsc.duration;
-                }
-            }
-        }
-    }
-
-    while (fsc_cat.count <= 0) {
+    while (1) {
         if ((ret = ff_get_line(avf->pb, buf, sizeof(buf))) <= 0)
             break;
         line++;
@@ -469,13 +408,10 @@ static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
     if (i == cat->nb_files) {
         avf->duration = time;
         cat->seekable = 1;
-        av_log(avf, AV_LOG_ERROR, "concat seekable: %d, %"PRId64"\n", cat->seekable, time);
     }
 
     cat->stream_match_mode = avf->nb_streams ? MATCH_EXACT_ID :
                                                MATCH_ONE_TO_ONE;
-    if (options)
-        av_dict_copy(&cat->options, *options, 0);
     if ((ret = open_file(avf, 0)) < 0)
         goto fail;
     return 0;
@@ -538,21 +474,13 @@ static int filter_packet(AVFormatContext *avf, ConcatStream *cs, AVPacket *pkt)
     return 0;
 }
 
-#define CONCAT_MAX_OPEN_TRY 3
 static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
 {
     ConcatContext *cat = avf->priv_data;
     int ret;
-    int try_counter = 0;
     int64_t file_start_time, delta;
     ConcatStream *cs;
     AVStream *st;
-    bool is_new_st = false;
-
-    if (cat->error) {
-        ret = cat->error;
-        goto fail;
-    }
 
     if (!cat->avf)
         return AVERROR(EIO);
@@ -560,30 +488,12 @@ static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
     while (1) {
         ret = av_read_frame(cat->avf, pkt);
         if (ret == AVERROR_EOF) {
-            is_new_st = true;
-            if ((ret = open_next_file(avf)) < 0) {
-                ++try_counter;
-                if (try_counter > CONCAT_MAX_OPEN_TRY) {
-                    cat->error = ret;
-                    if (avf->pb && ret != AVERROR_EOF)
-                        avf->pb->error = ret;
-                    ret = AVERROR_EOF;
-                    goto fail;
-                }
-
-                av_log(avf, AV_LOG_WARNING, "open_next_file() failed (%d)\n", try_counter);
-            }
+            if ((ret = open_next_file(avf)) < 0)
+                return ret;
             continue;
         }
-        if (ret < 0) {
-            if (avf->pb && cat->avf->pb)
-                avf->pb->error = cat->avf->pb->error;
+        if (ret < 0)
             return ret;
-        }
-        if (is_new_st) {
-            pkt->flags |= AV_PKT_FLAG_NEW_SEG;
-            is_new_st = false;
-        }
         if ((ret = match_streams(avf)) < 0) {
             av_packet_unref(pkt);
             return ret;
@@ -618,7 +528,6 @@ static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
     av_log(avf, AV_LOG_DEBUG, " -> pts:%s pts_time:%s dts:%s dts_time:%s\n",
            av_ts2str(pkt->pts), av_ts2timestr(pkt->pts, &st->time_base),
            av_ts2str(pkt->dts), av_ts2timestr(pkt->dts, &st->time_base));
-fail:
     return ret;
 }
 
@@ -695,9 +604,6 @@ static int concat_seek(AVFormatContext *avf, int stream,
     AVFormatContext *cur_avf_saved = cat->avf;
     int ret;
 
-    /* reset error/complete state */
-    cat->error = 0;
-
     if (!cat->seekable)
         return AVERROR(ESPIPE); /* XXX: can we use it? */
     if (flags & (AVSEEK_FLAG_BYTE | AVSEEK_FLAG_FRAME))
@@ -738,7 +644,7 @@ AVInputFormat ff_concat_demuxer = {
     .long_name      = NULL_IF_CONFIG_SMALL("Virtual concatenation script"),
     .priv_data_size = sizeof(ConcatContext),
     .read_probe     = concat_probe,
-    .read_header2   = concat_read_header,
+    .read_header    = concat_read_header,
     .read_packet    = concat_read_packet,
     .read_close     = concat_read_close,
     .read_seek2     = concat_seek,
