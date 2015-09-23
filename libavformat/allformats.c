@@ -101,6 +101,13 @@ void av_register_all(void)
     REGISTER_DEMUXER (CDXL,             cdxl);
     REGISTER_DEMUXER (CINE,             cine);
     REGISTER_DEMUXER (CONCAT,           concat);
+
+#define LIMAO_IJK_PLAYER 1
+
+#ifdef LIMAO_IJK_PLAYER
+    REGISTER_DEMUXER (CONCAT,           lm_concat); // add by tiangui @ 20150916
+#endif
+
     REGISTER_MUXER   (CRC,              crc);
     REGISTER_MUXER   (DASH,             dash);
     REGISTER_MUXDEMUX(DATA,             data);

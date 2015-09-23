@@ -374,6 +374,12 @@ int av_utf8_decode(int32_t *codep, const uint8_t **bufp, const uint8_t *buf_end,
  */
 int av_match_list(const char *name, const char *list, char separator);
 
+char * Ptr_2_Str(void *ptr);
+
+void * Str_2_Ptr(char *ptr);
+
+char * my_get_token(const char **buf, const char *term);
+
 /**
  * @}
  */

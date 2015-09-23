@@ -146,6 +146,78 @@ char *av_d2str(double d)
 
 #define WHITESPACES " \n\t"
 
+#define LIMAO_IJK_PLAYER 1
+
+#ifdef LIMAO_IJK_PLAYER
+
+#define PTR_STR_LEN 30
+
+/**
+  * arm32/64
+  */
+/*unsigned long long Ptr_2_ULLInteger(void *ptr)
+{
+	unsigned long long ret = (unsigned long long) ptr;
+	return ret;
+}
+
+void * ULLInteger_2_Ptr(unsigned long long v)
+{
+	void * ret = (void *) v;
+	return ret;
+}*/
+
+char * Ptr_2_Str(void *ptr)
+{
+	char *ret = av_malloc(PTR_STR_LEN); // for arm32/64
+	snprintf(ret, PTR_STR_LEN - 1, "%p", ptr);
+	return ret;
+}
+
+void * Str_2_Ptr(char *ptr)
+{
+	void *ret = 0;
+	sscanf(ptr, "%p", &ret);
+	return ret;
+}
+
+char * my_get_token(const char **buf, const char *term)
+{
+    char *out     = av_malloc(strlen(*buf) + 1 + PTR_STR_LEN); // 这里多申请了 PTR_STR_LEN 个字节
+    char *ret     = out, *end = out;
+    const char *p = *buf;
+    if (!out)
+        return NULL;
+    p += strspn(p, WHITESPACES);
+
+    while (*p && !strspn(p, term)) {
+        char c = *p++;
+        if (c == '\\' && *p) {
+            *out++ = *p++;
+            end    = out;
+        } else if (c == '\'') {
+            while (*p && *p != '\'')
+                *out++ = *p++;
+            if (*p) {
+                p++;
+                end = out;
+            }
+        } else {
+            *out++ = c;
+        }
+    }
+
+    do
+        *out-- = 0;
+    while (out >= end && strspn(out, WHITESPACES));
+
+    *buf = p;
+
+    return ret;
+}
+
+#endif
+
 char *av_get_token(const char **buf, const char *term)
 {
     char *out     = av_malloc(strlen(*buf) + 1);
