@@ -3044,6 +3044,10 @@ static int read_thread(void *arg)
     if (infinite_buffer < 0 && is->realtime)
         infinite_buffer = 1;
 
+    // ====================================================
+    // ====================================================
+    // ====================================================
+
     for (;;) {
         if (is->abort_request)
             break;
@@ -3134,7 +3138,18 @@ static int read_thread(void *arg)
                 goto fail;
             }
         }
-        ret = av_read_frame(ic, pkt);
+
+        ret = av_read_frame(ic, pkt); // _test
+
+    	//
+    	// -112233
+    	//
+        if (ret == -112233) {
+        	av_log(NULL, AV_LOG_ERROR, "av_read_frame(): ret = -112233\n");
+            SDL_Delay(1000);
+            continue;
+        }
+
         if (ret < 0) {
             if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof) {
                 if (is->video_stream >= 0)

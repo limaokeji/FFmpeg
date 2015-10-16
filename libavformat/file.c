@@ -281,11 +281,12 @@ static int file_open_2(URLContext *h, const char *filename, int flags)
 //    	return -1;
 //    }
 
+    // TODO：这个循环可以省掉
     for (int i = 0; i < pFileInfo->nb_blocks; i++)
     {
     	if (av_strncasecmp(newFilename, pFileInfo->blocks_info[i].filename, 7) == 0)
     	{
-    		if (i == 0)
+    		if (i == 1000) // 不可能走到这里。
     		{
 //    			fd = avpriv_open(pFileInfo->filename, O_RDONLY | O_BINARY, 0666);
 //    			if (fd == -1)

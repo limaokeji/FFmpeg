@@ -66,7 +66,8 @@ static struct CustomMediaFileInfo * get_media_file_info_1(const char *filepath)
 	pMideaFileInfo = (struct CustomMediaFileInfo *)malloc(sizeof(struct CustomMediaFileInfo) + nb_blocks * sizeof(struct MediaUnitData));
 	memset(pMideaFileInfo, 0, sizeof(struct CustomMediaFileInfo)+ nb_blocks * sizeof(struct MediaUnitData));
 
-	strcpy(pMideaFileInfo->filename,"vdata.one");
+	//strcpy(pMideaFileInfo->filename, "vdata.one");
+	strcpy(pMideaFileInfo->filename, "vdata.lmv");
 	pMideaFileInfo->nb_blocks = nb_blocks;
 
 	char *p1, *p2, *p3, *p4;
@@ -75,6 +76,7 @@ static struct CustomMediaFileInfo * get_media_file_info_1(const char *filepath)
 	int num;
 	int offset;
 	int size;
+	int next_block_offset;
 
 	int iLoop = 0;
 	while (1)
@@ -90,15 +92,19 @@ static struct CustomMediaFileInfo * get_media_file_info_1(const char *filepath)
 			p3 = strchr(p2 + 1, ',');
 			p4 = strchr(p3 + 1, ',');
 
+			// FIXME: atoi() ...
 			filename = p2 + 1; *p3 = 0;
 			num = atoi(p1);
 			offset = atoi(p3 + 1);
-			size = atoi(p4 + 1);
+			//size = atoi(p4 + 1);
+			next_block_offset = atoi(p4 + 1);
+			size = next_block_offset - offset;
 
 			strcpy(pMideaFileInfo->blocks_info[iLoop].filename, filename);
 			pMideaFileInfo->blocks_info[iLoop].block_num = num;
 			pMideaFileInfo->blocks_info[iLoop].block_offset = offset;
 			pMideaFileInfo->blocks_info[iLoop].block_size = size;
+			pMideaFileInfo->blocks_info[iLoop].next_block_offset = next_block_offset;
 
 			iLoop++;
 			if (iLoop == nb_blocks)

@@ -49,6 +49,12 @@ typedef struct {
     int64_t duration;
     ConcatStream *streams;
     int nb_streams;
+
+    // add by tiangui @ 20151009
+    int64_t f_offset;
+    int64_t f_size;
+    int dl_ok; // 这一个文件块的数据是否下载完毕
+
 } ConcatFile;
 
 typedef struct {
@@ -63,14 +69,16 @@ typedef struct {
     unsigned auto_convert;
 
 	#define PTR_STR_LEN 30
-	
 	char strPtr[PTR_STR_LEN];
 
 	void *tmpPtr;
+	struct CustomMediaFileInfo *pCMFI;
 	
 	char vdata_dir[1024]; // 末尾有'/'
-	char vdata_one_path[1024];
+
 	char vdata_db_path[1024];
+	//char vdata_one_path[1024];
+	char vdata_lmv_path[1024]; // vdata.lmv
 
 } ConcatContext;
 
@@ -298,6 +306,8 @@ static int open_file(AVFormatContext *avf, unsigned fileno)
     ConcatFile *file = &cat->files[fileno];
     int ret;
 
+    av_log(avf, AV_LOG_ERROR, "open_file(): fileno = %d file->url = %s\n", fileno, file->url);
+
     if (cat->avf)
         avformat_close_input(&cat->avf);
 
@@ -339,8 +349,11 @@ static int concat_read_close(AVFormatContext *avf)
     }
     av_freep(&cat->files);
 
-    // FIXME: ...
-
+    // FIXME: 关闭在 concat_read_header() 中打开的 lmv 文件
+    if (cat->pCMFI->fd > 0) {
+    	close(cat->pCMFI->fd);
+    	cat->pCMFI->fd = -1;
+    }
 
     return 0;
 }
@@ -350,6 +363,8 @@ static void * get_a_ptr(char *vdata_one_path, char *vdata_db_path)
 	//return (void *)0x7FFFFFFF;
 
 	struct CustomMediaFileInfo *ret = get_media_file_info(vdata_db_path);
+
+	av_log(NULL, AV_LOG_ERROR, "get_a_ptr(): p = %p\n", ret);
 
 	int access = O_RDONLY;
 
@@ -365,23 +380,77 @@ static void * get_a_ptr(char *vdata_one_path, char *vdata_db_path)
 	return (void *)ret;
 }
 
+// FIXME: 现在三个vdata文件不放在同一个目录了 --- tiangui @ 20151011
+// vdata.one --> vdata.lmv
+// 多了一个 vdata.txt
+
+static void get_vdata_lmv(/*IN*/char *vdata_txt_path, /*OUT*/char *vdata_lmv_path)
+{
+	FILE *fp = fopen(vdata_txt_path, "r");
+	fscanf(fp, "%s", vdata_lmv_path);
+	fclose(fp);
+
+	av_log(NULL, AV_LOG_ERROR, "vdata_lmv_path = %s\n", vdata_lmv_path);
+}
+
 static void get_vdata_dir(ConcatContext *cat, char *vdata_concat_path)
 {
 	// FIXME: 这里没有对路径做严格的判断。
 	char *p = strchr(vdata_concat_path, '/');
 	if (p == NULL)
 	{
-		// 相对路径
+		// 相对路径 --- PC上
 		cat->vdata_dir[0] = 0;
-		strcpy(cat->vdata_one_path, "vdata.one");
+		//strcpy(cat->vdata_one_path, "vdata.one");
+		strcpy(cat->vdata_lmv_path, "vdata.lmv");
 		strcpy(cat->vdata_db_path, "vdata.db");
 	} else {
-		// 绝对路径
+		// 绝对路径 --- Android上
 		int len = strlen(vdata_concat_path);
 		strcpy(cat->vdata_dir, vdata_concat_path); cat->vdata_dir[len-12] = 0;
-		strcpy(cat->vdata_one_path, cat->vdata_dir); strcat(cat->vdata_one_path, "vdata.one");
+
+		//strcpy(cat->vdata_one_path, cat->vdata_dir); strcat(cat->vdata_one_path, "vdata.one");
+		//strcpy(cat->vdata_lmv_path, cat->vdata_dir); strcat(cat->vdata_lmv_path, "vdata.lmv");
+
+		// vdata.txt
+		char vdata_txt_path[256];
+		strcpy(vdata_txt_path, cat->vdata_dir); strcat(vdata_txt_path, "vdata.txt");
+		get_vdata_lmv(vdata_txt_path, cat->vdata_lmv_path);
+
 		strcpy(cat->vdata_db_path, cat->vdata_dir); strcat(cat->vdata_db_path, "vdata.db");
 	}
+
+	av_log(NULL, AV_LOG_ERROR, "get_vdata_dir(): vdata_db_path = %s\n", cat->vdata_db_path);
+	av_log(NULL, AV_LOG_ERROR, "get_vdata_dir(): vdata_lmv_path = %s\n", cat->vdata_lmv_path);
+
+}
+
+// 获取vdata的已下载字节数 (这里使用 int 类型)
+static int get_vdata_dlsize(char *fileHash, char *lmvPath, int flag)
+{
+	//int64_t dlsize = 0;
+	int dlsize = 0;
+
+#if 0
+	// 测试代码
+//	if (flag == 0)
+//		dlsize = 964533 + 1;
+//	else
+		dlsize = 5141000; // 5141938
+#else
+	// 获取文件的当前大小
+	FILE *fp = fopen(lmvPath, "rb");
+	fseek(fp, 0, SEEK_END);
+	long curPos = ftell(fp);
+	fclose(fp);
+
+	dlsize = curPos - 2 * 1024 * 1024; // FIXME: 这里要减去2M。
+#endif
+
+	//av_log(NULL, AV_LOG_ERROR, "get_vdata_dlsize(): dlsize = %ld\n", dlsize);
+	av_log(NULL, AV_LOG_ERROR, "get_vdata_dlsize(): lmvPath = %s dlsize = %d\n", lmvPath, dlsize);
+
+	return dlsize;
 }
 
 static int concat_read_header(AVFormatContext *avf)
@@ -397,11 +466,13 @@ static int concat_read_header(AVFormatContext *avf)
     char *vdata_concat_path = avf->filename;
     get_vdata_dir(cat, vdata_concat_path);
 
-	cat->tmpPtr = get_a_ptr(cat->vdata_one_path, cat->vdata_db_path);
+	//cat->tmpPtr = get_a_ptr(cat->vdata_one_path, cat->vdata_db_path);
+	cat->tmpPtr = get_a_ptr(cat->vdata_lmv_path, cat->vdata_db_path);
 	char *tmpStr = Ptr_2_Str(cat->tmpPtr);
 	strcpy(cat->strPtr, tmpStr);
 	av_freep(&tmpStr);
 
+	cat->pCMFI = cat->tmpPtr; // TODO: 两个值一样的指针，后续精简
 
     while (1) {
         if ((ret = ff_get_line(avf->pb, buf, sizeof(buf))) <= 0)
@@ -496,16 +567,62 @@ fail:
     return ret;
 }
 
+static int testFlag = 0;
+
 static int open_next_file(AVFormatContext *avf)
 {
     ConcatContext *cat = avf->priv_data;
     unsigned fileno = cat->cur_file - cat->files;
+
+#if 0
+    // 测试代码 --- begin
+    if (fileno == 0)
+    	testFlag = 0;
+
+//    if (fileno == 1) {
+//    	av_log(avf, AV_LOG_ERROR, "open_next_file(): === failed ===\n");
+//    	return -112233;
+//    }
+
+    if (fileno > 1) {
+    	testFlag++;
+
+    	if (testFlag % 60 > 0) {
+        	av_log(avf, AV_LOG_ERROR, "open_next_file(): === failed === %d\n", testFlag);
+        	return -112233;
+    	}
+    }
+    // 测试代码 --- end
+#else
+    //int64_t dlsize = get_vdata_dlsize("fileHash", 0);
+    //int64_t next_block_offset = cat->pCMFI->blocks_info[fileno + 1].next_block_offset;
+    int dlsize = get_vdata_dlsize("fileHash", cat->vdata_lmv_path, 0);
+    int next_block_offset = cat->pCMFI->blocks_info[fileno + 1].next_block_offset;
+
+    if (dlsize < next_block_offset) {
+		av_log(avf, AV_LOG_ERROR,
+				"open_next_file(): === failed === fileno | next_block_offset | dlsize = %d %d %d\n",
+				//"open_next_file(): === failed === fileno | next_block_offset | dlsize = %d %ld %ld\n",
+				fileno + 1, next_block_offset, dlsize);
+#if 1
+		return -112233;
+#else
+		// 测试代码，模拟下载不完整的文件块
+		testFlag++;
+		if (testFlag < 60)
+			return -112233;
+		else
+			testFlag = 0;
+#endif
+    }
+#endif
 
     if (cat->cur_file->duration == AV_NOPTS_VALUE)
         cat->cur_file->duration = cat->avf->duration;
 
     if (++fileno >= cat->nb_files)
         return AVERROR_EOF;
+
     return open_file(avf, fileno);
 }
 
@@ -563,8 +680,12 @@ static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
     while (1) {
         ret = av_read_frame(cat->avf, pkt);
         if (ret == AVERROR_EOF) {
-            if ((ret = open_next_file(avf)) < 0)
+        	//
+        	// TODO：这里要加上数据块的完整性检查
+        	//
+        	if ((ret = open_next_file(avf)) < 0)
                 return ret;
+
             continue;
         }
         if (ret < 0)

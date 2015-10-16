@@ -7,9 +7,19 @@ struct MediaUnitData
 {
 	char filename[12];
 	int block_num;
-	int64_t block_offset;
-	int64_t block_size;
-	int64_t block_duration;
+
+//	int64_t block_offset;
+//	int64_t block_size;
+//	int64_t block_duration;
+//
+//	int64_t next_block_offset;
+
+	// FIXME: 2G文件大小限制 ...
+	int block_offset;
+	int block_size;
+	int block_duration;
+
+	int next_block_offset;
 };
 
 struct CustomMediaFileInfo
